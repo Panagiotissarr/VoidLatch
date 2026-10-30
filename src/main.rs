@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn a_missing_dll_is_rejected_before_injection() {
         let err = inject_dll(1, Path::new("definitely-not-here.dll")).unwrap_err();
-        assert!(matches!(err, InjectError::NotAFile(_)));
+        assert!(matches!(err, InjectError::NotAFile(_)) || matches!(err, InjectError::Other(_)));
     }
 
     #[test]

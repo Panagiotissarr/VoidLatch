@@ -1,9 +1,9 @@
 //! egui front-end.
 //!
-//! Two tabs share one window:
+//! Tabs share one window:
 //!
 //! * **Targets** — scan for Minecraft processes and pick one.
-//! * **Dll** — every `.dll` in the user's home `dll` folder, injectable
+//! * **Dll** — every `.dll` in the configured folder, injectable
 //!   straight from the list without opening a file dialog.
 //!
 //! A native file picker is still available on the Targets tab for dlls
@@ -37,28 +37,34 @@ pub fn run() -> Result<(), eframe::Error> {
             theme::apply(&cc.egui_ctx);
             let mut app = InjectorApp::new();
             app.scan();
+
+            // Perform migration on startup
+            if let Some(folder) = dll::dll_folder() {
+                let _ = dll::migrate_to_voidlatch_structure(&folder);
+            }
+
             Ok(Box::new(InjectorGui {
                 app,
                 tab: Tab::Targets,
-                dll: DllPanel::new(),
+                files: FilePanel::new(),
             }))
         }),
     )
 }
 
-/// The two views of the window.
+/// The views of the window.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Targets,
-    Dll,
+    Files,
 }
 
-/// State for the dll tab: the watched folder, its contents, and the entry the
+/// State for the files tab: the watched folder, its contents, and the entry the
 /// user highlighted.
-struct DllPanel {
+struct FilePanel {
     folder: Option<PathBuf>,
     entries: Vec<DllEntry>,
-    /// Index into `entries` of the highlighted dll, if any.
+    /// Index into `entries` of the highlighted file, if any.
     selected: Option<usize>,
     /// Text in the filter box; entries whose name does not contain it are hidden.
     filter: String,
@@ -66,7 +72,7 @@ struct DllPanel {
     error: Option<String>,
 }
 
-impl DllPanel {
+impl FilePanel {
     fn new() -> Self {
         let mut panel = Self {
             folder: dll::dll_folder(),
@@ -80,16 +86,24 @@ impl DllPanel {
     }
 
     /// Re-reads the watched folder from disk.
-    ///
-    /// A folder the user picked with **Change** already exists, so it is used
-    /// as-is. The default `home/dlls` is created when missing, so the tab is
-    /// never a dead end — dlls can be dropped straight into it.
     fn reload(&mut self) {
-        self.folder = match dll::dll_folder() {
-            Some(folder) if folder.is_dir() => Some(folder),
-            Some(folder) => {
-                let _ = std::fs::create_dir_all(&folder);
-                Some(folder)
+        // Perform migration if needed
+        if let Some(folder) = dll::dll_folder() {
+            if let Some(migrated) = dll::migrate_to_voidlatch_structure(&folder) {
+                dll::set_dll_folder(&migrated);
+            }
+        }
+
+        let root_folder = dll::dll_folder();
+        self.folder = match root_folder {
+            Some(root) => {
+                let dll_folder = root.join("dll");
+                if dll_folder.is_dir() {
+                    Some(dll_folder)
+                } else {
+                    let _ = std::fs::create_dir_all(&dll_folder);
+                    Some(dll_folder)
+                }
             }
             None => None,
         };
@@ -102,12 +116,11 @@ impl DllPanel {
 
         if !folder.is_dir() {
             self.entries.clear();
-            self.error = Some("could not create the dlls folder".to_string());
+            self.error = Some("could not create the dll folder".to_string());
             return;
         }
 
         self.error = None;
-        // The shared helper already filters to dll and sorts by name.
         self.entries = dll::list_dlls(&folder)
             .into_iter()
             .map(DllEntry::new)
@@ -127,7 +140,7 @@ impl DllPanel {
             .collect()
     }
 
-    /// The highlighted dll, if any.
+    /// The highlighted file, if any.
     fn selected_entry(&self) -> Option<&DllEntry> {
         self.selected.and_then(|i| self.entries.get(i))
     }
@@ -137,7 +150,7 @@ impl DllPanel {
 struct InjectorGui {
     app: InjectorApp,
     tab: Tab,
-    dll: DllPanel,
+    files: FilePanel,
 }
 
 impl eframe::App for InjectorGui {
@@ -157,7 +170,7 @@ impl eframe::App for InjectorGui {
             ui.add_space(12.0);
             match self.tab {
                 Tab::Targets => self.targets_tab(ui),
-                Tab::Dll => self.dll_tab(ui),
+                Tab::Files => self.files_tab(ui),
             }
         });
 
@@ -175,8 +188,8 @@ impl InjectorGui {
             if theme::tab(ui, "Targets", self.tab == Tab::Targets) {
                 self.tab = Tab::Targets;
             }
-            if theme::tab(ui, "Dll", self.tab == Tab::Dll) {
-                self.tab = Tab::Dll;
+            if theme::tab(ui, "Dll", self.tab == Tab::Files) {
+                self.tab = Tab::Files;
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let count = self.app.processes().len();
@@ -200,16 +213,16 @@ impl InjectorGui {
         process_list(ui, &mut self.app);
     }
 
-    /// Dll tab: the home `dll` folder, its dlls, and a fast inject
-    /// path that needs no file dialog.
-    fn dll_tab(&mut self, ui: &mut Ui) {
-        folder_header(ui, &mut self.dll);
+    /// Files tab: the configured dll folder, and a fast inject path that
+    /// needs no file dialog.
+    fn files_tab(&mut self, ui: &mut Ui) {
+        folder_header(ui, &mut self.files);
 
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("🔎").color(Palette::TEXT_DIM));
             ui.add(
-                egui::TextEdit::singleline(&mut self.dll.filter)
+                egui::TextEdit::singleline(&mut self.files.filter)
                     .hint_text("Filter dlls…")
                     .desired_width(f32::INFINITY),
             );
@@ -217,8 +230,8 @@ impl InjectorGui {
 
         ui.add_space(10.0);
 
-        if self.dll.entries.is_empty() {
-            match &self.dll.error {
+        if self.files.entries.is_empty() {
+            match &self.files.error {
                 Some(e) => theme::empty_state(ui, "Could not read the folder", e),
                 None => theme::empty_state(
                     ui,
@@ -229,7 +242,7 @@ impl InjectorGui {
             return;
         }
 
-        if self.dll.visible().is_empty() {
+        if self.files.visible().is_empty() {
             theme::empty_state(ui, "Nothing matches that filter", "Try a different name.");
             return;
         }
@@ -237,13 +250,13 @@ impl InjectorGui {
         let busy = self.app.is_busy();
         let mut pending: Option<usize> = None;
         let mut double_clicked: Option<PathBuf> = None;
-        let selected = self.dll.selected;
+        let selected = self.files.selected;
 
         ScrollArea::vertical()
             .auto_shrink([false, false])
             .max_height(ui.available_height() - 58.0)
             .show(ui, |ui| {
-                for (index, entry) in self.dll.visible() {
+                for (index, entry) in self.files.visible() {
                     let resp = dll_row(ui, entry, selected == Some(index));
                     if resp.double_clicked() {
                         double_clicked = Some(entry.path.clone());
@@ -254,22 +267,22 @@ impl InjectorGui {
             });
 
         if let Some(index) = pending {
-            self.dll.selected = Some(index);
+            self.files.selected = Some(index);
         }
 
         ui.add_space(8.0);
         self.fast_inject_row(ui, busy);
 
-        // Double-clicking a dll injects it right away.
+        // Double-clicking a file injects it right away.
         if let Some(path) = double_clicked {
             self.inject_now(&path);
         }
     }
 
-    /// The primary button of the dll tab: injects the highlighted dll
+    /// The primary button of the files tab: injects the highlighted file
     /// with no dialog and no intermediate selection step.
     fn fast_inject_row(&mut self, ui: &mut Ui, busy: bool) {
-        let entry = self.dll.selected_entry();
+        let entry = self.files.selected_entry();
         let pid = self.app.selected_pid();
 
         let (label, ready) = match (entry, pid) {
@@ -279,7 +292,7 @@ impl InjectorGui {
         };
 
         let hint = match (entry, pid) {
-            (None, _) => "Select a dll above, or scan for targets first.",
+            (None, _) => "Select a file above, or scan for targets first.",
             (Some(_), None) => "No target selected — pick one on the Targets tab.",
             _ => "Injects the highlighted dll immediately.",
         };
@@ -293,7 +306,7 @@ impl InjectorGui {
                     .min_size(egui::vec2(ui.available_width(), 38.0)),
             );
             if resp.clicked() {
-                if let Some(e) = self.dll.selected_entry() {
+                if let Some(e) = self.files.selected_entry() {
                     let path = e.path.clone();
                     self.inject_now(&path);
                 }
@@ -303,7 +316,7 @@ impl InjectorGui {
     }
 
     /// Points the app at `path` and starts injection immediately. This is what
-    /// makes the dll tab fast: no file dialog, no second confirm step.
+    /// makes the files tab fast: no file dialog, no second confirm step.
     fn inject_now(&mut self, path: &Path) {
         if self.app.is_busy() {
             return;
@@ -338,7 +351,7 @@ impl InjectorGui {
                     .app
                     .dll()
                     .map(dll::file_name)
-                    .unwrap_or_else(|| "no dll".to_string());
+                    .unwrap_or_else(|| "no file".to_string());
                 let target = self
                     .app
                     .selected_pid()
@@ -350,7 +363,7 @@ impl InjectorGui {
                         .small(),
                 );
                 ui.label(
-                    RichText::new(format!("dll: {chosen}"))
+                    RichText::new(format!("File: {chosen}"))
                         .color(Palette::TEXT_DIM)
                         .small(),
                 );
@@ -359,10 +372,10 @@ impl InjectorGui {
     }
 }
 
-/// The folder path shown at the top of the dll tab, with **Change** to point
+/// The folder path shown at the top of the files tab, with **Change** to point
 /// the tab at a different folder and **Rescan** to re-read the current one.
-fn folder_header(ui: &mut Ui, panel: &mut DllPanel) {
-    theme::section_title(ui, "Dlls folder");
+fn folder_header(ui: &mut Ui, panel: &mut FilePanel) {
+    theme::section_title(ui, "Injection folder");
 
     ui.add_space(6.0);
     ui.horizontal(|ui| {
@@ -377,15 +390,16 @@ fn folder_header(ui: &mut Ui, panel: &mut DllPanel) {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui
                 .add(egui::Button::new("Change…"))
-                .on_hover_text("Pick a different folder of dlls")
+                .on_hover_text("Pick a different root folder")
                 .clicked()
             {
                 if let Some(folder) = rfd::FileDialog::new()
-                    .set_title("Choose a folder of dlls")
+                    .set_title("Choose a root folder")
                     .set_directory(
                         panel
                             .folder
                             .as_ref()
+                            .and_then(|p| p.parent())
                             .map(|p| p.to_string_lossy().into_owned())
                             .filter(|p| !p.is_empty())
                             .unwrap_or_default()
@@ -447,7 +461,7 @@ fn dll_picker(ui: &mut Ui, app: &mut InjectorApp) {
                                 .strong(),
                         );
                         ui.label(
-                            RichText::new("Browse for one, or use the dll tab.")
+                            RichText::new("Browse for one, or use the Files tab.")
                                 .color(Palette::TEXT_DIM)
                                 .small(),
                         );

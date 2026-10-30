@@ -81,6 +81,9 @@ pub enum InjectError {
     /// Injection is not implemented for the host platform.
     #[error("injection is not supported on this platform yet")]
     Unsupported,
+    /// Generic error.
+    #[error("{0}")]
+    Other(String),
 }
 
 /// Platform-specific dll injection. One implementation per OS.

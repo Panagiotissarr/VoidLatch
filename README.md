@@ -4,7 +4,7 @@ A small, standalone tool for learning how dll injection works. It:
 
 1. Scans for running **Minecraft (Java Edition)** processes.
 2. Lets you pick a `.dll` / `.so` from disk with a native file dialog, or from
-   your home `dll` folder.
+   the `dll` folder VoidLatch watches.
 3. Injects it into the Minecraft process you select.
 
 ---
@@ -16,12 +16,17 @@ Two tabs:
 | Tab | What it does |
 |---|---|
 | **Targets** | Scan for Minecraft processes, pick one, and choose a dll with the native **Browse…** dialog. |
-| **Dll** | Lists every dll in your home `dll` folder, ready to inject. |
+| **Dll** | Lists every dll in the watched `dll` folder, ready to inject. |
 
 ### The `dlls` folder
 
 VoidLatch watches a folder called `dlls` in your home directory
 (`C:\Users\<you>\dlls`, `~/dlls`). It is created on first launch if missing.
+
+The **Dll** tab lists the `dll/` subfolder inside it (`~/dlls/dll`), created on
+demand. Loose `.dll` files left at the top of the watched folder are moved into
+`dll/` on startup and rescan, and the folder may be renamed to `Voidlatch` on
+first run (so the watched path can become `~/Voidlatch/dll`).
 
 Drop any `.dll` in there and it appears in the **Dll** tab with its size.
 From there you can:
@@ -40,6 +45,7 @@ current folder without changing it.
 
 The **Browse…** button on the Targets tab is unchanged — it is still there for
 dlls that live anywhere else on disk.
+
 ---
 
 ## Build
@@ -50,6 +56,10 @@ cargo build --release
 
 Requires Rust 1.80+ (2021 edition). Binary lands at `target/release/minecraft-injector.exe`
 on Windows, or `target/release/minecraft-injector` on Linux.
+
+Every push and pull request is built and tested on Windows, Linux and macOS by
+GitHub Actions (`.github/workflows/build.yml`); each run uploads the compiled
+binary as a downloadable artifact.
 
 ## Run
 
@@ -64,7 +74,7 @@ Right-click → **Run as administrator**, then:
 1. Click **Scan**.
 2. Click the Minecraft process in the list.
 3. Choose a dll — either **Browse…** for one anywhere on disk, or drop it
-   into your home `dll` folder and use the **Dll** tab.
+   into the watched `dll` folder and use the **Dll** tab.
 4. Click **Inject**.
 
 **Headless:**
@@ -144,12 +154,14 @@ This is deliberately narrow, and worth being explicit about:
   the list can't be selected.
 - **You pick the dll explicitly.** There's no bundled payload, no default, and
   no download. The tool only ever loads a file you named: either chosen via the
-  file dialog, or clicked in your home `dll` folder. It never picks one for you.
+  file dialog, or clicked in the watched `dll` folder. It never picks one for you.
 - **No network code.** No HTTP client, no sockets, no DNS. It cannot phone home
   because it has no way to talk to anything.
 - **No stealth.** Nothing here hides the process, hides the mapped module, spoofs
   anything, or defeats anti-cheat or antivirus. It is a visible, ordinary
   injection — exactly what you'd want when studying the technique.
+- **Native dlls only.** There is no jar or mods path — the only thing this tool
+  injects is a native library (`.dll` on Windows, `.so` on Linux).
 
 ---
 
@@ -215,7 +227,7 @@ minecraft-injector/
     │   └── theme.rs         # dark theme, frames, shared text styles
     └── platform/
         ├── mod.rs           # injection trait + error type + shared validation
-        ├── windows.rs       # dll-syringe backend
+        ├── windows.rs       # remote LoadLibraryW backend
         ├── linux.rs         # ptrace backend
         └── macos.rs         # unsupported stub
 ```

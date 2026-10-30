@@ -85,6 +85,57 @@ pub fn dll_folder() -> Option<PathBuf> {
     Some(match_existing_dll_folder(&home).unwrap_or_else(|| home.join(FOLDER_NAME)))
 }
 
+/// The root folder name after migration.
+const VOIDLATCH_FOLDER_NAME: &str = "Voidlatch";
+
+/// Migrates a folder to the Voidlatch structure.
+///
+/// Loose `.dll` files are moved into a `dll/` subfolder, then the root folder
+/// is renamed to `Voidlatch` regardless of where it is located.
+pub fn migrate_to_voidlatch_structure(folder: &Path) -> Option<PathBuf> {
+    if !folder.is_dir() {
+        return Some(folder.to_path_buf());
+    }
+
+    let entries = std::fs::read_dir(folder).ok()?;
+    let mut dll_files = Vec::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dll")) {
+            dll_files.push(path);
+        }
+    }
+
+    if !dll_files.is_empty() {
+        let dll_subdir = folder.join("dll");
+        let _ = std::fs::create_dir_all(&dll_subdir);
+
+        for dll_file in dll_files {
+            if let Some(name) = dll_file.file_name() {
+                let dest = dll_subdir.join(name);
+                if !dest.exists() {
+                    let _ = std::fs::rename(&dll_file, &dest);
+                }
+            }
+        }
+    }
+
+    // Rename the root folder to Voidlatch
+    let parent = folder.parent()?;
+    let new_path = parent.join(VOIDLATCH_FOLDER_NAME);
+    if new_path.exists() && new_path != folder {
+        // If Voidlatch already exists, just use it
+        return Some(new_path);
+    }
+    if new_path != folder {
+        let _ = std::fs::rename(folder, &new_path);
+        Some(new_path)
+    } else {
+        Some(folder.to_path_buf())
+    }
+}
+
 /// Where the folder chosen with **Change** is written.
 fn settings_file() -> Option<PathBuf> {
     Some(home_dir()?.join(".voidlatch-dll-folder"))
